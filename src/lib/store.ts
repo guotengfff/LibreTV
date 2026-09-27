@@ -19,6 +19,8 @@ export interface AppSettings {
   doubanEnabled: boolean;
   /** 首页推荐数据源：豆瓣热门 / Bangumi 每日放送（免 key）/ 影视热榜（60s API） */
   recommendSource: 'douban' | 'bangumi' | 'hot-list';
+  /** 用户是否在设置中主动选择过推荐数据源；为 false 时部署者的 DEFAULT_RECOMMEND_SOURCE 默认值可生效 */
+  recommendSourceTouched: boolean;
   autoplayNext: boolean;
   imageProxyMode: 'direct' | 'proxy' | 'custom';
   customImageProxy: string;
@@ -289,6 +291,7 @@ export const useAppStore = create<AppState>()(
       adFilter: true,
       doubanEnabled: true,
       recommendSource: 'hot-list',
+      recommendSourceTouched: false,
       autoplayNext: true,
       imageProxyMode: 'proxy',
       customImageProxy: '',
@@ -477,13 +480,20 @@ export const useAppStore = create<AppState>()(
             nextByUrl.set(s.url, { ...current, fromSubscriptions: [...current.fromSubscriptions, subUrl] });
           }
         }
-        // 不在本次列表中的条目原样保留；仅当被本订阅唯一持有且本次消失时才移除
+        // 不在本次列表中的条目：摘除本订阅的归属引用（远端已删即不再持有）——
+        // 摘除后仍被其他订阅引用的降级为其引用；不再被任何订阅引用的订阅源随本次同步移除；
+        // 手动添加的源（无订阅归属）由用户完全掌控，不受同步影响
         for (const s of existing) {
           if (nextByUrl.has(s.url)) continue;
-          if (s.fromSubscriptions.includes(subUrl) && s.fromSubscriptions.length === 1) {
-            orphanUrls.add(s.url);
-          } else {
+          if (!s.fromSubscriptions.includes(subUrl)) {
             nextByUrl.set(s.url, s);
+            continue;
+          }
+          const rest = s.fromSubscriptions.filter((u) => u !== subUrl);
+          if (rest.length > 0) {
+            nextByUrl.set(s.url, { ...s, fromSubscriptions: rest });
+          } else {
+            orphanUrls.add(s.url);
           }
         }
 
@@ -693,6 +703,9 @@ export const useAppStore = create<AppState>()(
       },
 
       updateSettings: (patch) => {
+        // 用户主动修改推荐数据源时打上「已选择」标记：此后部署者的
+        // DEFAULT_RECOMMEND_SOURCE 默认值不再覆盖该用户的选择
+        const touched = 'recommendSource' in patch;
         // 打开成人内容过滤时，同步取消勾选所有成人源，避免两者并存
         if (patch.yellowFilter === true) {
           const adultKeys = new Set(
@@ -702,11 +715,12 @@ export const useAppStore = create<AppState>()(
           );
           set({
             ...patch,
+            ...(touched ? { recommendSourceTouched: true } : null),
             selectedKeys: get().selectedKeys.filter((k) => !adultKeys.has(k)),
           });
           return;
         }
-        set(patch);
+        set(touched ? { ...patch, recommendSourceTouched: true } : patch);
       },
     }),
     {
@@ -759,6 +773,7 @@ export const useAppStore = create<AppState>()(
         adFilter: s.adFilter,
         doubanEnabled: s.doubanEnabled,
         recommendSource: s.recommendSource,
+        recommendSourceTouched: s.recommendSourceTouched,
         autoplayNext: s.autoplayNext,
         imageProxyMode: s.imageProxyMode,
         customImageProxy: s.customImageProxy,
